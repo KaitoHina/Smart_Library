@@ -10,10 +10,10 @@ Decision already made in practice: seat sensor = analog `GP2Y0A21YK0F` (D1 close
 | 1 | Technical freeze | Seat sensor type, radar interface, web scope, pin map — all locked and written into the report | 10 | | [ ] |
 | 2 | Physical model | One desk + 4 seats built, sensors mounted, cables routed, labels on, ready for the demo bench | 10 | | [ ] |
 | 3 | Seat detection | All 4 seats reliably report occupied/free after debounce, live free count correct | 11 | | [ ] |
-| 4 | OLED dashboard | One screen shows free count, 2×2 seat map, noise level, radar state, plus all warning pages | 11 | | [ ] |
+| 4 | OLED dashboard | One screen shows free count, 2×2 seat map, noise level, radar state, plus all warning pages | 11 | Joe| [ ] |
 | 5 | Noise monitoring & alerts | Classifies silent / moderate / noisy, ignores brief sounds, sustained noise → red warning at 5 s | 12 | | [ ] |
 | 6 | Radar & sensor fusion | Radar cross-checks seat map; disagreement detected and shown as "sensor check" | 13 | | [ ] |
-| 7 | Web dashboard | Phone opens a page showing the same live state as the OLED | 12 | | [ ] |
+| 7 | Web dashboard | Phone opens a page showing the same live state as the OLED | 12 | Joe| [ ] |
 | 8 | Firmware structure | Modular, single config point, no blocking code, 10 min continuous run without hang | 13 | | [ ] |
 | 9 | Testing | Quantified table + plots of accuracy, false positives, response time, alert latency | 14 | | [ ] |
 | 10 | Deliverables | Mid-term demo, 4 logbook entries, final presentation, YouTube video, final report all in | 9–14 | | [ ] |
