@@ -42,8 +42,8 @@ const unsigned long OLED_PERIOD_MS  = 250;
 
 // ---- noise thresholds (peak-to-peak ADC counts) - CALIBRATE THESE ----
 // index: 0 = Silent, 1 = Quiet, 2 = Collaborative
-const uint16_t TH_MODERATE[3] = { 15,  30,  60 };
-const uint16_t TH_NOISY[3]    = { 50,  80, 140 };
+const uint16_t TH_MODERATE[3] = { 30,  60,  120 };
+const uint16_t TH_NOISY[3]    = { 100,  160, 280 };
 const uint16_t HYST = 8;                       // hysteresis when dropping to a lower level
 const uint8_t  AVG_WINDOWS = 8;                // moving average length
 
