@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Library · Seat Dashboard (demo)</title>
+<style>
+  :root {
+    --bg: #e7e2d8;
+    --ink: #1c2430;
+    --muted: #5c6774;
+    --panel: #f7f4ee;
+    --line: #d5cfc4;
+    --navy: #1e3348;
+    --navy-2: #2c4a66;
+    --free: #1f7a4d;
+    --free-bg: #e5f4ec;
+    --busy: #1d5f93;
+    --busy-bg: #e4eef6;
+    --warn: #8a5a12;
+    --warn-bg: #f8efd8;
+    --bad: #8d2f2f;
+    --bad-bg: #f8e6e4;
+    --shadow: 0 10px 28px rgba(30, 40, 52, 0.08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      radial-gradient(900px 420px at 8% -10%, #f3efe6 0%, transparent 60%),
+      linear-gradient(180deg, #efeae1 0%, var(--bg) 240px);
+    font-family: "Segoe UI", sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+    padding: 22px 28px 14px;
+  }
+  .brand small { display: block; letter-spacing: 0.14em; color: var(--muted); font-size: 12px; }
+  h1 { margin: 2px 0 0; font-size: 28px; font-weight: 650; letter-spacing: -0.03em; }
+  .meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .pill {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .pill strong { font-weight: 650; }
+  .pill.sim { background: #fff4d6; border-color: #e4c56a; color: #6d4b09; }
+  main { padding: 0 28px 36px; display: grid; gap: 16px; }
+  .scenarios { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .scenarios span { color: var(--muted); font-size: 13px; margin-right: 4px; }
+  button {
+    font: inherit;
+    border: 1px solid #c9c2b6;
+    background: #fff;
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  button.active { background: var(--navy); color: #f6f3ec; border-color: var(--navy); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr); gap: 16px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(255,255,255,0.7);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--navy-2); }
+  .stats { display: grid; grid-template-columns: 1.3fr repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 12px 14px;
+  }
+  .stat b { display: block; font-size: 26px; letter-spacing: -0.03em; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .floor {
+    position: relative;
+    min-height: 460px;
+    border-radius: 16px;
+    background:
+      linear-gradient(#d9d3c8 1px, transparent 1px) 0 0 / 100% 28px,
+      linear-gradient(90deg, #d9d3c8 1px, transparent 1px) 0 0 / 28px 100%,
+      #efe8dc;
+    border: 1px solid #ddd4c6;
+    overflow: hidden;
+  }
+  .zone-label {
+    position: absolute;
+    top: 12px;
+    left: 14px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .ghost {
+    position: absolute;
+    width: 148px;
+    height: 72px;
+    border: 1.5px dashed #b7aea0;
+    border-radius: 10px;
+    color: #8d8578;
+    font-size: 12px;
+    display: grid;
+    place-items: center;
+    background: rgba(255,255,255,0.25);
+  }
+  .table-wrap {
+    position: absolute;
+    left: 50%;
+    top: 56%;
+    transform: translate(-50%, -50%);
+    width: min(420px, 62%);
+  }
+  .scope {
+    text-align: center;
+    font-size: 13px;
+    color: var(--navy);
+    margin-bottom: 8px;
+    font-weight: 650;
+  }
+  .table {
+    background: #fbf8f2;
+    border: 2px solid var(--navy);
+    border-radius: 18px;
+    box-shadow: 0 0 0 8px rgba(30, 51, 72, 0.08);
+    padding: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .seat {
+    text-align: left;
+    border-radius: 12px;
+    padding: 12px;
+    min-height: 92px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .seat .name { font-weight: 700; }
+  .seat .state { font-size: 14px; }
+  .seat.free { background: var(--free-bg); border-color: #9dcdb4; color: var(--free); }
+  .seat.busy { background: var(--busy-bg); border-color: #a9c6dc; color: var(--busy); }
+  .seat.check { background: var(--warn-bg); border-color: #e2c98a; color: var(--warn); }
+  .seat.stale { background: var(--bad-bg); border-color: #e3b4b0; color: var(--bad); }
+  .seat.selected { outline: 2px solid var(--navy); outline-offset: 2px; }
+  .side { display: grid; gap: 16px; align-content: start; }
+  .status-line { display: flex; justify-content: space-between; gap: 8px; margin: 8px 0; font-size: 14px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .badge.ok { background: var(--free-bg); color: var(--free); }
+  .badge.mid { background: #eef1f4; color: var(--navy); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge.bad { background: var(--bad-bg); color: var(--bad); }
+  ul.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  ul.events li {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+  ul.events time { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+  .detail { min-height: 92px; font-size: 14px; color: var(--ink); }
+  .detail p { margin: 6px 0; }
+  footer {
+    padding: 0 28px 28px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  @media (max-width: 900px) {
+    header, .grid { display: block; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .meta, .side { margin-top: 12px; }
+    header { padding: 18px 16px 10px; }
+    main, footer { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <small>CITYU · PPR-L01-GP6 · WEEKLY DEMO</small>
+    <h1>Smart Library</h1>
+  </div>
+  <div class="meta">
+    <div class="pill sim" id="sourcePill"><strong>Simulated data</strong> · Hardware not connected</div>
+    <div class="pill" id="linkPill">Loading connection status</div>
+  </div>
+</header>
+<main>
+  <div class="scenarios">
+    <span>Data source / demo scene</span>
+    <button type="button" data-scene="live">Live hardware</button>
+    <button type="button" data-scene="normal" class="active">Normal use</button>
+    <button type="button" data-scene="noisy">Area noisy</button>
+    <button type="button" data-scene="mismatch">Sensor mismatch</button>
+    <button type="button" data-scene="stale">Stale data</button>
+  </div>
+  <section class="stats" id="stats"></section>
+  <div class="grid">
+    <section class="card">
+      <h2>Reading area</h2>
+      <div class="floor" id="floor">
+        <div class="zone-label">Top view · Only one table has sensors</div>
+        <div class="ghost" style="left:4%; top:14%;">Other table<br>Not monitored</div>
+        <div class="ghost" style="right:4%; top:14%;">Other table<br>Not monitored</div>
+        <div class="ghost" style="left:4%; bottom:8%;">Other table<br>Not monitored</div>
+        <div class="table-wrap">
+          <div class="scope">Smart Library sensing zone · This project only</div>
+          <div class="table" id="seats"></div>
+        </div>
+      </div>
+      <div class="detail" id="detail"></div>
+    </section>
+    <div class="side">
+      <section class="card" id="noiseCard">
+        <h2>Area noise</h2>
+        <div id="noise"></div>
+      </section>
+      <section class="card">
+        <h2>Radar cross-check</h2>
+        <div id="radar"></div>
+      </section>
+      <section class="card">
+        <h2>Recent events</h2>
+        <ul class="events" id="events"></ul>
+      </section>
+    </div>
+  </div>
+</main>
+<footer>
+  Live and simulated telemetry. Coverage is four infrared seats (GP2Y0A21YK0F), one area microphone (MAX9814, uncalibrated, no dB shown), and one area radar (LD2410C, which cannot point to a specific seat). Other tables are spatial context only. Intended path: Mega 2560 → UART → ESP8266 → library LAN → local dashboard. Whether an ESP8266 is on the hardware list is still to be confirmed.
+</footer>
+<script>
+
+const CONFIG = {
+  // Inclusive distance ranges in cm, per seat. Values are examples.
+  seats: {
+    A: { occupied: [10, 45], free: [55, 80] },
+    B: { occupied: [10, 45], free: [55, 80] },
+    C: { occupied: [10, 45], free: [55, 80] },
+    D: { occupied: [10, 45], free: [55, 80] }
+  },
+  // Microphone peak-to-peak amplitude over a sampling window (ADC counts).
+  noise: { moderateFrom: 35, noisyFrom: 100, alertAfterMs: 5000 },
+  radar: { absentValue: 0, presentValue: 1 },
+  staleAfterMs: 5000,
+  pollEveryMs: 1000
+};
+
+const ids = Object.keys(CONFIG.seats);
+const labels = { free: "Free", busy: "Occupied", check: "Needs a check", stale: "No update" };
+const clock = ms => ms == null ? "—" : new Date(ms).toLocaleTimeString();
+const inRange = (value, range) => Number.isFinite(value) && value >= range[0] && value <= range[1];
+let selected = "A", mode = "normal", packet = null, reachable = true;
+let events = [], previous = {}, noisySince = null, noisyAlert = false;
+
+function log(message, time = Date.now()) {
+  events = [[clock(time), message], ...events].slice(0, 12);
+}
+
+function view(now = Date.now()) {
+  const fresh = reachable && packet && now - packet.receivedAt < CONFIG.staleAfterMs;
+  const seats = ids.map(id => {
+    const distance = fresh ? packet.distanceCm[id] : null;
+    const ranges = CONFIG.seats[id];
+    const occupied = inRange(distance, ranges.occupied), free = inRange(distance, ranges.free);
+    const state = !fresh ? "stale" : occupied === free ? "check" : occupied ? "busy" : "free";
+    return { id, distance, state, label: labels[state], sensor: !fresh ? "No fresh reading." :
+      state === "check" ? "Reading missing or outside an unambiguous range." : "Based on the configured infrared distance range." };
+  });
+  const raw = fresh ? packet.radar : null;
+  const present = raw === CONFIG.radar.presentValue ? true : raw === CONFIG.radar.absentValue ? false : null;
+  const occupied = seats.some(s => s.state === "busy");
+  const complete = seats.every(s => s.state !== "check");
+  const mismatch = present === false && occupied || present === true && complete && !occupied;
+  const title = !fresh ? "No update" : mismatch ? "Needs a check" :
+    present === null || !complete ? "Inconclusive" : "Agrees";
+  const amplitude = fresh ? packet.noiseAmplitude : null;
+  const level = !Number.isFinite(amplitude) ? "No update" :
+    amplitude >= CONFIG.noise.noisyFrom ? "Noisy" :
+    amplitude >= CONFIG.noise.moderateFrom ? "Moderate" : "Quiet";
+  const linkStatus = !reachable ? "Service unreachable" : !packet ? "Waiting for data" : !fresh ? "Data stale" : "Receiving data";
+  return {
+    seats, events, link: { ok: Boolean(fresh), text: linkStatus, updated: clock(packet?.receivedAt) },
+    noise: { level, cls: noisyAlert || level === "Noisy" ? "warn" : level === "No update" ? "bad" : "ok",
+      note: noisyAlert ? "Sustained noise alert for the monitored area." : "Area reading only. No calibrated dB or audio recording." },
+    radar: { present, title, cls: mismatch ? "warn" : title === "Agrees" ? "ok" : "mid",
+      note: mismatch ? "Area presence and seat readings disagree. Seat readings are shown independently." : "Radar checks the area, not individual seats." }
+  };
+}
+
+function update() {
+  const scene = view();
+  const { link, seats, noise, radar } = scene;
+  if (link.text !== previous.link) log(link.text);
+  if (link.ok) {
+    for (const seat of seats) {
+      const before = previous[seat.id];
+      if (before && before !== seat.label) log("Seat " + seat.id + ": " + before + " → " + seat.label, packet.receivedAt);
+      previous[seat.id] = seat.label;
+    }
+    if (radar.title === "Needs a check" && previous.radar !== radar.title) log("Radar and seat readings disagree.", packet.receivedAt);
+  } else for (const id of ids) delete previous[id];
+  if (noise.level === "Noisy") {
+    noisySince ??= packet.receivedAt;
+    if (!noisyAlert && packet.receivedAt - noisySince >= CONFIG.noise.alertAfterMs) {
+      noisyAlert = true;
+      log("Alert: sustained area noise.", packet.receivedAt);
+    }
+  } else { noisySince = null; noisyAlert = false; }
+  previous.link = link.text;
+  previous.radar = radar.title;
+  render();
+}
+
+function sample() {
+  const noisy = mode === "noisy";
+  return { distanceCm: { A: 65, B: 30, C: mode === "mismatch" ? 65 : 30, D: 65 },
+    noiseAmplitude: noisy ? 140 : mode === "mismatch" ? 50 : 15,
+    radar: mode === "mismatch" ? 0 : 1, receivedAt: Date.now() };
+}
+
+async function tick() {
+  if (mode !== "live") {
+    if (mode !== "stale") packet = sample();
+  } else {
+    const request = generation;
+    try {
+      const response = await fetch("/api/telemetry", { cache: "no-store", signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error("Telemetry unavailable");
+      const latest = await response.json();
+      if (request !== generation) return;
+      if (packet && latest && latest.receivedAt - packet.receivedAt >= CONFIG.staleAfterMs) {
+        noisySince = null;
+        noisyAlert = false;
+      }
+      packet = latest;
+      reachable = true;
+    } catch {
+      if (request !== generation) return;
+      reachable = false;
+    }
+  }
+  update();
+}
+
+let generation = 0;
+document.querySelector(".scenarios").addEventListener("click", event => {
+  const button = event.target.closest("[data-scene]");
+  if (!button) return;
+  generation++;
+  mode = button.dataset.scene;
+  packet = mode === "live" ? null : sample();
+  if (mode === "stale") packet.receivedAt -= CONFIG.staleAfterMs;
+  reachable = true;
+  events = []; previous = {}; noisySince = null; noisyAlert = false;
+  document.getElementById("sourcePill").textContent = mode === "live" ? "Live telemetry" : "Simulated data · Demo";
+  document.querySelectorAll("[data-scene]").forEach(el => {
+    el.classList.toggle("active", el === button);
+    el.setAttribute("aria-pressed", el === button);
+  });
+  update();
+});
+
+async function loop() {
+  await tick();
+  setTimeout(loop, CONFIG.pollEveryMs);
+}
+function render() {
+  const scene = view();
+  const free = scene.seats.filter(s => s.state === "free").length;
+  const busy = scene.seats.filter(s => s.state === "busy").length;
+  const summary = scene.link.ok
+    ? `${free} / 4 seats free`
+    : "No fresh data";
+
+  document.getElementById("linkPill").innerHTML = scene.link.ok
+    ? `<strong>${scene.link.text}</strong> · Updated ${scene.link.updated}`
+    : `<strong>${scene.link.text}</strong> · Last packet ${scene.link.updated}`;
+
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><b>${summary}</b><span>Counts only the 4 seats on this sensed table</span></div>
+    <div class="stat"><b>${scene.link.ok ? free : "—"}</b><span>Free</span></div>
+    <div class="stat"><b>${scene.link.ok ? busy : "—"}</b><span>Occupied</span></div>
+    <div class="stat"><b>${scene.link.ok ? scene.seats.filter(s => s.state === "check").length : "—"}</b><span>Needs a check</span></div>`;
+
+  document.getElementById("seats").innerHTML = scene.seats.map(seat => `
+    <button type="button" class="seat ${seat.state} ${seat.id === selected ? "selected" : ""}" data-seat="${seat.id}">
+      <span class="name">Seat ${seat.id}</span>
+      <span class="state">${labelIcon(seat.state)} ${seat.label}</span>
+    </button>`).join("");
+
+  const seat = scene.seats.find(s => s.id === selected);
+  document.getElementById("detail").innerHTML = `
+    <p><strong>Seat ${seat.id} · ${seat.label}</strong></p>
+    <p>${seat.sensor}</p>
+    <p>Latest related time: ${scene.link.updated}. Distance: ${seat.distance ?? "—"} cm.</p>`;
+
+  document.getElementById("noise").innerHTML = `
+    <div class="status-line"><span>Current category</span><span class="badge ${scene.noise.cls}">${scene.noise.level}</span></div>
+    <p>${scene.noise.note}</p>`;
+
+  const presence = scene.radar.present === null ? "Unknown" : scene.radar.present ? "Someone" : "Nobody";
+  document.getElementById("radar").innerHTML = `
+    <div class="status-line"><span>Anyone in the area</span><span class="badge ${scene.radar.cls}">${presence}</span></div>
+    <div class="status-line"><span>Compared with seats</span><span class="badge ${scene.radar.cls}">${scene.radar.title}</span></div>
+    <p>${scene.radar.note}</p>`;
+
+  document.getElementById("events").innerHTML = scene.events.map(([time, text]) =>
+    `<li><time>${time}</time>${text}</li>`).join("");
+}
+
+function labelIcon(state) {
+  if (state === "free") return "○";
+  if (state === "busy") return "●";
+  if (state === "check") return "△";
+  return "✕";
+}
+
+document.getElementById("seats").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-seat]");
+  if (!button) return;
+  selected = button.dataset.seat;
+  render();
+});
+
+
+loop();
+</script>
+</body>
+</html>

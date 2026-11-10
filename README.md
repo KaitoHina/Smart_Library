@@ -1,5 +1,7 @@
 # Smart Library
 
+For the Windows dashboard, see the [setup and troubleshooting guide](docs/dashboard.md). It covers the browser demo, pin configuration, Arduino upload, USB launcher, and calibration.
+
 Arduino Mega 2560 based seat availability + noise monitoring system for library study zones.
 
 - Live seat map and free-seat count (4 seats)
