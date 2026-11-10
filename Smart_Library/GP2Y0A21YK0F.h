@@ -8,6 +8,8 @@ private:
 public:
   GP2Y0A21YK0F(const int pin);
 
+  int readRaw();
+  float distanceFromRaw(int analogValue);
   float getDistance();
 };
 

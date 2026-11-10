@@ -251,7 +251,8 @@
 <script>
 
 const CONFIG = {
-  // Inclusive distance ranges in cm, per seat. Values are examples.
+  // Inclusive distance ranges in cm, per seat. Used only for legacy packets
+  // and demo scenes; live firmware sends debounced seatOccupied flags.
   seats: {
     A: { occupied: [10, 45], free: [55, 80] },
     B: { occupied: [10, 45], free: [55, 80] },
@@ -259,6 +260,7 @@ const CONFIG = {
     D: { occupied: [10, 45], free: [55, 80] }
   },
   // Microphone peak-to-peak amplitude over a sampling window (ADC counts).
+  // Used only when the firmware does not send noiseLevel.
   noise: { moderateFrom: 35, noisyFrom: 100, alertAfterMs: 5000 },
   radar: { absentValue: 0, presentValue: 1 },
   staleAfterMs: 5000,
@@ -278,38 +280,61 @@ function log(message, time = Date.now()) {
 
 function view(now = Date.now()) {
   const fresh = reachable && packet && now - packet.receivedAt < CONFIG.staleAfterMs;
+  const firmwareSeat = id => fresh && packet.seatOccupied &&
+    typeof packet.seatOccupied[id] === "boolean" ? packet.seatOccupied[id] : null;
   const seats = ids.map(id => {
-    const distance = fresh ? packet.distanceCm[id] : null;
+    const distance = fresh ? packet.distanceCm?.[id] ?? null : null;
     const ranges = CONFIG.seats[id];
+    const firmwareOccupied = firmwareSeat(id);
     const occupied = inRange(distance, ranges.occupied), free = inRange(distance, ranges.free);
-    const state = !fresh ? "stale" : occupied === free ? "check" : occupied ? "busy" : "free";
-    return { id, distance, state, label: labels[state], sensor: !fresh ? "No fresh reading." :
-      state === "check" ? "Reading missing or outside an unambiguous range." : "Based on the configured infrared distance range." };
+    const state = !fresh ? "stale" :
+      firmwareOccupied !== null ? (firmwareOccupied ? "busy" : "free") :
+      occupied === free ? "check" : occupied ? "busy" : "free";
+    const sensor = !fresh ? "No fresh reading." :
+      firmwareOccupied !== null ? "Debounced by the firmware's calibrated IR threshold." :
+      state === "check" ? "Reading missing or outside an unambiguous range." :
+      "Based on the configured infrared distance range.";
+    return { id, distance, state, label: labels[state], sensor };
   });
   const raw = fresh ? packet.radar : null;
   const present = raw === CONFIG.radar.presentValue ? true : raw === CONFIG.radar.absentValue ? false : null;
   const occupied = seats.some(s => s.state === "busy");
   const complete = seats.every(s => s.state !== "check");
   const mismatch = present === false && occupied || present === true && complete && !occupied;
-  const title = !fresh ? "No update" : mismatch ? "Needs a check" :
-    present === null || !complete ? "Inconclusive" : "Agrees";
+  const firmwareDisagree = fresh && typeof packet.disagree === "boolean" ? packet.disagree : null;
+  const title = !fresh ? "No update" :
+    firmwareDisagree === true ? "Needs a check" :
+    firmwareDisagree === false ? (mismatch ? "Checking…" : present === null || !complete ? "Inconclusive" : "Agrees") :
+    mismatch ? "Needs a check" : present === null || !complete ? "Inconclusive" : "Agrees";
   const amplitude = fresh ? packet.noiseAmplitude : null;
-  const level = !Number.isFinite(amplitude) ? "No update" :
+  const firmwareLevel = fresh && typeof packet.noiseLevel === "string" ? packet.noiseLevel.toUpperCase() : null;
+  const level = firmwareLevel && ["QUIET", "MODERATE", "NOISY"].includes(firmwareLevel)
+    ? firmwareLevel[0] + firmwareLevel.slice(1).toLowerCase()
+    : !Number.isFinite(amplitude) ? "No update" :
     amplitude >= CONFIG.noise.noisyFrom ? "Noisy" :
     amplitude >= CONFIG.noise.moderateFrom ? "Moderate" : "Quiet";
+  const firmwareWarning = fresh && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
+  const warning = firmwareWarning === null ? noisyAlert : firmwareWarning;
+  const firmwareFree = fresh && Number.isInteger(packet.freeCount) ? packet.freeCount : null;
+  const freeCount = firmwareFree === null ? seats.filter(s => s.state === "free").length : firmwareFree;
+  const busyCount = seats.filter(s => s.state === "busy").length;
+  const mode = fresh && typeof packet.mode === "string" && ["SILENT", "QUIET", "COLLAB"].includes(packet.mode) ? packet.mode : null;
   const linkStatus = !reachable ? "Service unreachable" : !packet ? "Waiting for data" : !fresh ? "Data stale" : "Receiving data";
   return {
     seats, events, link: { ok: Boolean(fresh), text: linkStatus, updated: clock(packet?.receivedAt) },
-    noise: { level, cls: noisyAlert || level === "Noisy" ? "warn" : level === "No update" ? "bad" : "ok",
-      note: noisyAlert ? "Sustained noise alert for the monitored area." : "Area reading only. No calibrated dB or audio recording." },
-    radar: { present, title, cls: mismatch ? "warn" : title === "Agrees" ? "ok" : "mid",
-      note: mismatch ? "Area presence and seat readings disagree. Seat readings are shown independently." : "Radar checks the area, not individual seats." }
+    freeCount, busyCount, mode,
+    noise: { level, cls: warning || level === "Noisy" ? "warn" : level === "No update" ? "bad" : "ok",
+      note: warning ? "Sustained noise alert for the monitored area." : "Area reading only. No calibrated dB or audio recording." },
+    radar: { present, title, cls: title === "Needs a check" ? "warn" : title === "Agrees" ? "ok" : "mid",
+      note: title === "Needs a check" ? "Area presence and seat readings disagree. Seat readings are shown independently." :
+        title === "Checking…" ? "The firmware is confirming this mismatch before showing an alert." :
+        "Radar checks the area, not individual seats." }
   };
 }
 
 function update() {
   const scene = view();
-  const { link, seats, noise, radar } = scene;
+  const { link, seats, noise, radar, mode } = scene;
   if (link.text !== previous.link) log(link.text);
   if (link.ok) {
     for (const seat of seats) {
@@ -318,8 +343,19 @@ function update() {
       previous[seat.id] = seat.label;
     }
     if (radar.title === "Needs a check" && previous.radar !== radar.title) log("Radar and seat readings disagree.", packet.receivedAt);
-  } else for (const id of ids) delete previous[id];
-  if (noise.level === "Noisy") {
+    if (mode && previous.mode && mode !== previous.mode) log("Zone mode: " + previous.mode + " → " + mode, packet.receivedAt);
+    if (typeof packet.noiseWarning === "boolean" && packet.noiseWarning && previous.noiseWarning !== true) {
+      log("Alert: sustained area noise.", packet.receivedAt);
+    }
+  } else {
+    for (const id of ids) delete previous[id];
+    delete previous.mode;
+    delete previous.noiseWarning;
+  }
+  if (link.ok && typeof packet.noiseWarning === "boolean") {
+    noisySince = null;
+    noisyAlert = packet.noiseWarning;
+  } else if (noise.level === "Noisy") {
     noisySince ??= packet.receivedAt;
     if (!noisyAlert && packet.receivedAt - noisySince >= CONFIG.noise.alertAfterMs) {
       noisyAlert = true;
@@ -328,14 +364,28 @@ function update() {
   } else { noisySince = null; noisyAlert = false; }
   previous.link = link.text;
   previous.radar = radar.title;
+  previous.mode = mode;
+  previous.noiseWarning = link.ok && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
   render();
 }
 
 function sample() {
   const noisy = mode === "noisy";
-  return { distanceCm: { A: 65, B: 30, C: mode === "mismatch" ? 65 : 30, D: 65 },
-    noiseAmplitude: noisy ? 140 : mode === "mismatch" ? 50 : 15,
-    radar: mode === "mismatch" ? 0 : 1, receivedAt: Date.now() };
+  const mismatch = mode === "mismatch";
+  const seatOccupied = { A: false, B: true, C: !mismatch, D: false };
+  return {
+    distanceCm: { A: 65, B: 30, C: mismatch ? 65 : 30, D: 65 },
+    seatOccupied,
+    freeCount: Object.values(seatOccupied).filter(value => !value).length,
+    noiseAmplitude: noisy ? 140 : mismatch ? 50 : 15,
+    noiseLevel: noisy ? "NOISY" : mismatch ? "MODERATE" : "QUIET",
+    noiseStage: noisy ? 2 : mismatch ? 1 : 0,
+    noiseWarning: noisy,
+    mode: "QUIET",
+    radar: mismatch ? 0 : 1,
+    disagree: mismatch,
+    receivedAt: Date.now()
+  };
 }
 
 async function tick() {
@@ -386,8 +436,8 @@ async function loop() {
 }
 function render() {
   const scene = view();
-  const free = scene.seats.filter(s => s.state === "free").length;
-  const busy = scene.seats.filter(s => s.state === "busy").length;
+  const free = scene.freeCount;
+  const busy = scene.busyCount;
   const summary = scene.link.ok
     ? `${free} / 4 seats free`
     : "No fresh data";
@@ -415,6 +465,7 @@ function render() {
     <p>Latest related time: ${scene.link.updated}. Distance: ${seat.distance ?? "—"} cm.</p>`;
 
   document.getElementById("noise").innerHTML = `
+    <div class="status-line"><span>Zone policy</span><span class="badge mid">${scene.mode ?? "—"}</span></div>
     <div class="status-line"><span>Current category</span><span class="badge ${scene.noise.cls}">${scene.noise.level}</span></div>
     <p>${scene.noise.note}</p>`;
 

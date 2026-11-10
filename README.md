@@ -9,7 +9,7 @@ Arduino Mega 2560 based seat availability + noise monitoring system for library 
 - mmWave radar cross-check (sensor fusion)
 - OLED local dashboard
 
-Project proposal: `docs/PPR-L01-GP6.pdf`
+Project proposal: `docs/proposal/PPR-L01-GP6.pdf`
 Task list and schedule: `docs/task-list.md`
 
 ---
@@ -74,14 +74,14 @@ Install these libraries via `Tools > Manage Libraries...`:
 | Active buzzer | 1 | Short non-blocking beep |
 | Push button | 2 | Mode switch, warning acknowledge |
 
-### Provisional pin map
+### Pin map
 
-> Not final yet — see task 1 in `docs/task-list.md`. Do not wire two functions to the same pin.
+> These are the firmware defaults. Change the constants at the top of `Smart_Library.ino` if your wiring differs. Do not wire two functions to the same pin.
 
 | Function | Pin |
 |---|---|
-| IR seat sensors 1–4 | A0, A1, A2, A3 |
-| Microphone (MAX9814 AO) | A4 |
+| IR seat sensors 1–4 | A1, A2, A3, A4 |
+| Microphone (MAX9814 AO) | A0 |
 | OLED SDA / SCL | 20 / 21 |
 | Seat status LEDs 1–4 | D27, D28, D29, D30 |
 | RGB LED (R, G, B) | D4, D3, D2 |
@@ -92,10 +92,10 @@ Install these libraries via `Tools > Manage Libraries...`:
 
 ### IR sensor notes
 
-- Output is **analog voltage that decreases as the object gets closer** — it is not a linear distance sensor.
+- Output is **analog voltage that increases as the object gets closer** — it is not a linear distance sensor.
 - The driver `GP2Y0A21YK0F.cpp` converts voltage to cm using `distance = 27.86 / (V - 0.42)` and clamps to 10–80 cm.
 - Readings below 10 cm return `-1` (out of range). A hand directly in front of the sensor may report far or invalid — mount so the seated person is roughly 30–60 cm away.
-- Always read 5–10 samples and average before deciding occupied/free.
+- The merged firmware uses the raw ADC threshold from `Sensor_test/test_code.ino` (`SEAT_THRESHOLD`, default 400) and confirms occupancy for 3 s / freeing for 10 s. Calibrate the threshold with a person actually seated; the dashboard's live seat state comes from this debounced flag, while `distanceCm` is informational.
 
 ## 4. Git workflow for group members
 
@@ -121,7 +121,7 @@ Rules:
 
 Open `docs/task-list.md`. Pick a main task, put your name in the **Owner** column, and commit that change so others can see it.
 
-Current status: components have arrived, IR sensor reading verified, everything else pending.
+Current status: firmware merges seat detection, noise monitoring, radar fusion, OLED, LEDs, buzzer and buttons; hardware calibration and full testing are still required.
 
 ## 6. Troubleshooting
 
