@@ -191,6 +191,22 @@
     header { padding: 18px 16px 10px; }
     main, footer { padding-left: 16px; padding-right: 16px; }
   }
+
+  #diagnosticsButton { margin: .6rem 0; }
+  #diagnostics { width: min(860px, 92vw); max-height: 88vh; padding: clamp(16px, 4vw, 32px);
+    box-sizing: border-box; border-radius: 18px; border: 1px solid #8295aa; background: #f7fafc; color: #172d42; }
+  #diagnostics::backdrop { background: #122338aa; }
+  #diagnostics header { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    padding: 0; background: none; color: inherit; }
+  #diagnostics h2, #diagnostics h3 { margin: .6rem 0; }
+  #diagnostics pre { margin: .5rem 0; padding: 1rem; background: #e8eff5; border-radius: 10px;
+    max-height: 16rem; overflow: auto; font: .85rem/1.5 Consolas, monospace; }
+  #diagnostics fieldset { border: 1px solid #adbcca; border-radius: 10px; margin: .8rem 0; padding: .85rem; }
+  #diagnostics label { display: inline-flex; flex-direction: column; gap: .3rem; margin: .25rem; }
+  #diagnostics input, #diagnostics select { font: inherit; padding: .4rem; max-width: 100%; }
+  #diagnostics input { width: 6.5rem; }
+  #diagnostics output { display: block; margin-top: .7rem; }
+  #diagnostics .diag-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: .4rem; }
 </style>
 </head>
 <body>
@@ -213,6 +229,7 @@
     <button type="button" data-scene="mismatch">Sensor mismatch</button>
     <button type="button" data-scene="stale">Stale data</button>
   </div>
+  <button type="button" id="diagnosticsButton" hidden>Diagnostics &amp; settings</button>
   <section class="stats" id="stats"></section>
   <div class="grid">
     <section class="card">
@@ -245,6 +262,29 @@
     </div>
   </div>
 </main>
+<dialog id="diagnostics" aria-labelledby="diagnosticsTitle">
+  <header><h2 id="diagnosticsTitle">Live diagnostics</h2><button id="closeDiagnostics" type="button">Close</button></header>
+  <p id="packetTime"></p>
+  <p id="decisionSummary"></p>
+  <details open><summary>Latest hardware packet</summary><pre id="packetPreview"></pre></details>
+  <h3>Dashboard thresholds</h3>
+  <p>Firmware mode uses board decisions when available. Dashboard mode recalculates seats, noise and radar agreement. Board thresholds are not transmitted.</p>
+  <form id="diagnosticsForm">
+    <label>Decision source
+      <select name="source"><option value="firmware">Firmware (default)</option><option value="dashboard">Dashboard thresholds</option></select>
+    </label>
+    <div id="seatSettings"></div>
+    <fieldset><legend>Noise thresholds</legend><div class="diag-grid">
+      <label>Moderate from (ADC)<input name="moderateFrom" type="number" min="0" max="1023" step="any" required></label>
+      <label>Noisy from (ADC)<input name="noisyFrom" type="number" min="0" max="1023" step="any" required></label>
+      <label>Alert after (seconds)<input name="seconds" type="number" min="0" step="any" required></label>
+    </div></fieldset>
+    <p>Seat ranges include both endpoints. Outside both ranges, the seat needs a check. Dashboard radar comparison uses the recomputed seats and reports mismatches immediately.</p>
+    <button type="submit">Apply settings</button>
+    <button type="button" id="resetSettings">Restore defaults</button>
+    <output id="settingsStatus" role="status"></output>
+  </form>
+</dialog>
 <footer>
   Live and simulated telemetry. Coverage is four infrared seats (GP2Y0A21YK0F), one area microphone (MAX9814, uncalibrated, no dB shown), and one area radar (LD2410C, which cannot point to a specific seat). Other tables are spatial context only. Intended path: Mega 2560 → UART → ESP8266 → library LAN → local dashboard. Whether an ESP8266 is on the hardware list is still to be confirmed.
 </footer>
@@ -268,6 +308,25 @@ const CONFIG = {
 };
 
 const ids = Object.keys(CONFIG.seats);
+const defaults = { source: "firmware", seats: CONFIG.seats, noise: CONFIG.noise };
+const settingsKey = "smart-library.dashboard.thresholds.v1";
+let settings = defaults;
+
+function validSettings(value) {
+  const validRange = range => Array.isArray(range) && range.length === 2 &&
+    range.every(n => Number.isFinite(n) && n >= 0) && range[0] <= range[1];
+  return ["firmware", "dashboard"].includes(value?.source) && ids.every(id => {
+    const seat = value.seats?.[id];
+    return validRange(seat?.occupied) && validRange(seat?.free) &&
+      (seat.occupied[1] < seat.free[0] || seat.free[1] < seat.occupied[0]);
+  }) && ["moderateFrom", "noisyFrom", "alertAfterMs"].every(key =>
+    Number.isFinite(value.noise?.[key]) && value.noise[key] >= 0) &&
+    value.noise.moderateFrom < value.noise.noisyFrom && value.noise.noisyFrom <= 1023;
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(settingsKey));
+  if (validSettings(saved)) settings = saved;
+} catch { /* Defaults remain available if storage is disabled. */ }
 const labels = { free: "Free", busy: "Occupied", check: "Needs a check", stale: "No update" };
 const clock = ms => ms == null ? "—" : new Date(ms).toLocaleTimeString();
 const inRange = (value, range) => Number.isFinite(value) && value >= range[0] && value <= range[1];
@@ -280,11 +339,13 @@ function log(message, time = Date.now()) {
 
 function view(now = Date.now()) {
   const fresh = reachable && packet && now - packet.receivedAt < CONFIG.staleAfterMs;
-  const firmwareSeat = id => fresh && packet.seatOccupied &&
+  const override = mode === "live" && settings.source === "dashboard";
+  const thresholds = mode === "live" ? settings : defaults;
+  const firmwareSeat = id => !override && fresh && packet.seatOccupied &&
     typeof packet.seatOccupied[id] === "boolean" ? packet.seatOccupied[id] : null;
   const seats = ids.map(id => {
     const distance = fresh ? packet.distanceCm?.[id] ?? null : null;
-    const ranges = CONFIG.seats[id];
+    const ranges = thresholds.seats[id];
     const firmwareOccupied = firmwareSeat(id);
     const occupied = inRange(distance, ranges.occupied), free = inRange(distance, ranges.free);
     const state = !fresh ? "stale" :
@@ -301,28 +362,28 @@ function view(now = Date.now()) {
   const occupied = seats.some(s => s.state === "busy");
   const complete = seats.every(s => s.state !== "check");
   const mismatch = present === false && occupied || present === true && complete && !occupied;
-  const firmwareDisagree = fresh && typeof packet.disagree === "boolean" ? packet.disagree : null;
+  const firmwareDisagree = !override && fresh && typeof packet.disagree === "boolean" ? packet.disagree : null;
   const title = !fresh ? "No update" :
     firmwareDisagree === true ? "Needs a check" :
     firmwareDisagree === false ? (mismatch ? "Checking…" : present === null || !complete ? "Inconclusive" : "Agrees") :
     mismatch ? "Needs a check" : present === null || !complete ? "Inconclusive" : "Agrees";
   const amplitude = fresh ? packet.noiseAmplitude : null;
-  const firmwareLevel = fresh && typeof packet.noiseLevel === "string" ? packet.noiseLevel.toUpperCase() : null;
+  const firmwareLevel = !override && fresh && typeof packet.noiseLevel === "string" ? packet.noiseLevel.toUpperCase() : null;
   const level = firmwareLevel && ["QUIET", "MODERATE", "NOISY"].includes(firmwareLevel)
     ? firmwareLevel[0] + firmwareLevel.slice(1).toLowerCase()
     : !Number.isFinite(amplitude) ? "No update" :
-    amplitude >= CONFIG.noise.noisyFrom ? "Noisy" :
-    amplitude >= CONFIG.noise.moderateFrom ? "Moderate" : "Quiet";
-  const firmwareWarning = fresh && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
-  const warning = firmwareWarning === null ? noisyAlert : firmwareWarning;
-  const firmwareFree = fresh && Number.isInteger(packet.freeCount) ? packet.freeCount : null;
+    amplitude >= thresholds.noise.noisyFrom ? "Noisy" :
+    amplitude >= thresholds.noise.moderateFrom ? "Moderate" : "Quiet";
+  const firmwareWarning = !override && fresh && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
+  const warning = fresh && (firmwareWarning ?? noisyAlert);
+  const firmwareFree = !override && fresh && Number.isInteger(packet.freeCount) ? packet.freeCount : null;
   const freeCount = firmwareFree === null ? seats.filter(s => s.state === "free").length : firmwareFree;
   const busyCount = seats.filter(s => s.state === "busy").length;
-  const mode = fresh && typeof packet.mode === "string" && ["SILENT", "QUIET", "COLLAB"].includes(packet.mode) ? packet.mode : null;
+  const zoneMode = fresh && typeof packet.mode === "string" && ["SILENT", "QUIET", "COLLAB"].includes(packet.mode) ? packet.mode : null;
   const linkStatus = !reachable ? "Service unreachable" : !packet ? "Waiting for data" : !fresh ? "Data stale" : "Receiving data";
   return {
     seats, events, link: { ok: Boolean(fresh), text: linkStatus, updated: clock(packet?.receivedAt) },
-    freeCount, busyCount, mode,
+    freeCount, busyCount, mode: zoneMode, firmwareWarning,
     noise: { level, cls: warning || level === "Noisy" ? "warn" : level === "No update" ? "bad" : "ok",
       note: warning ? "Sustained noise alert for the monitored area." : "Area reading only. No calibrated dB or audio recording." },
     radar: { present, title, cls: title === "Needs a check" ? "warn" : title === "Agrees" ? "ok" : "mid",
@@ -331,6 +392,8 @@ function view(now = Date.now()) {
         "Radar checks the area, not individual seats." }
   };
 }
+
+function modeSourceIsLive() { return mode === "live"; }
 
 function update() {
   const scene = view();
@@ -344,7 +407,7 @@ function update() {
     }
     if (radar.title === "Needs a check" && previous.radar !== radar.title) log("Radar and seat readings disagree.", packet.receivedAt);
     if (mode && previous.mode && mode !== previous.mode) log("Zone mode: " + previous.mode + " → " + mode, packet.receivedAt);
-    if (typeof packet.noiseWarning === "boolean" && packet.noiseWarning && previous.noiseWarning !== true) {
+    if (scene.firmwareWarning === true && previous.noiseWarning !== true) {
       log("Alert: sustained area noise.", packet.receivedAt);
     }
   } else {
@@ -352,12 +415,12 @@ function update() {
     delete previous.mode;
     delete previous.noiseWarning;
   }
-  if (link.ok && typeof packet.noiseWarning === "boolean") {
+  if (scene.firmwareWarning !== null) {
     noisySince = null;
     noisyAlert = packet.noiseWarning;
   } else if (noise.level === "Noisy") {
     noisySince ??= packet.receivedAt;
-    if (!noisyAlert && packet.receivedAt - noisySince >= CONFIG.noise.alertAfterMs) {
+    if (!noisyAlert && packet.receivedAt - noisySince >= (modeSourceIsLive() ? settings : defaults).noise.alertAfterMs) {
       noisyAlert = true;
       log("Alert: sustained area noise.", packet.receivedAt);
     }
@@ -365,8 +428,9 @@ function update() {
   previous.link = link.text;
   previous.radar = radar.title;
   previous.mode = mode;
-  previous.noiseWarning = link.ok && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
+  previous.noiseWarning = scene.firmwareWarning !== null ? packet.noiseWarning : null;
   render();
+  renderDiagnostics();
 }
 
 function sample() {
@@ -493,6 +557,84 @@ document.getElementById("seats").addEventListener("click", (event) => {
   render();
 });
 
+
+const diagnostics = document.getElementById("diagnostics");
+const diagnosticsButton = document.getElementById("diagnosticsButton");
+const settingsForm = document.getElementById("diagnosticsForm");
+const settingsStatus = document.getElementById("settingsStatus");
+const input = name => settingsForm.elements.namedItem(name);
+
+document.getElementById("seatSettings").innerHTML = ids.map(id =>
+  `<fieldset><legend>Seat ${id} · distance in cm</legend><div class="diag-grid">` +
+  ["occupied", "free"].flatMap(kind => ["min", "max"].map((bound, index) =>
+    `<label>${labels[kind === "occupied" ? "busy" : "free"]} ${bound}<input type="number" min="0" step="any" required name="${id}-${kind}-${index}"></label>`
+  )).join("") + "</div></fieldset>"
+).join("");
+
+function fillSettings() {
+  input("source").value = settings.source;
+  for (const id of ids) for (const kind of ["occupied", "free"]) {
+    settings.seats[id][kind].forEach((number, index) => { input(`${id}-${kind}-${index}`).value = number; });
+  }
+  input("moderateFrom").value = settings.noise.moderateFrom;
+  input("noisyFrom").value = settings.noise.noisyFrom;
+  input("seconds").value = settings.noise.alertAfterMs / 1000;
+}
+
+function renderDiagnostics() {
+  diagnosticsButton.hidden = !modeSourceIsLive();
+  if (!diagnostics.open) return;
+  const scene = view();
+  const age = packet ? Math.max(0, Date.now() - packet.receivedAt) / 1000 : null;
+  document.getElementById("packetTime").textContent = packet ?
+    `${scene.link.text} · Last received ${new Date(packet.receivedAt).toLocaleString()} · ${age.toFixed(1)} s ago` :
+    scene.link.text;
+  document.getElementById("decisionSummary").textContent =
+    `${settings.source === "dashboard" ? "Dashboard thresholds" : "Firmware preferred"} · ${scene.link.ok ? scene.freeCount + " free · " : ""}${scene.noise.level} · Radar: ${scene.radar.title}`;
+  const preview = document.getElementById("packetPreview");
+  const raw = packet ? JSON.stringify(packet, null, 2) : "Waiting for the first hardware packet.";
+  if (preview.textContent !== raw) preview.textContent = raw;
+}
+
+function applySettings(next, message) {
+  settings = next;
+  try { localStorage.setItem(settingsKey, JSON.stringify(settings)); }
+  catch { message += " Browser storage unavailable. Settings apply for this session."; }
+  settingsStatus.textContent = message;
+  noisySince = null;
+  noisyAlert = false;
+  previous = {};
+  update();
+}
+
+diagnosticsButton.addEventListener("click", () => {
+  fillSettings();
+  settingsStatus.textContent = "";
+  diagnostics.showModal();
+  renderDiagnostics();
+});
+document.getElementById("closeDiagnostics").addEventListener("click", () => diagnostics.close());
+settingsForm.addEventListener("submit", event => {
+  event.preventDefault();
+  const next = {
+    source: input("source").value,
+    seats: Object.fromEntries(ids.map(id => [id, {
+      occupied: [0, 1].map(i => input(`${id}-occupied-${i}`).valueAsNumber),
+      free: [0, 1].map(i => input(`${id}-free-${i}`).valueAsNumber)
+    }])),
+    noise: { moderateFrom: input("moderateFrom").valueAsNumber,
+      noisyFrom: input("noisyFrom").valueAsNumber, alertAfterMs: input("seconds").valueAsNumber * 1000 }
+  };
+  if (!validSettings(next)) {
+    settingsStatus.textContent = "Check that each minimum is at most its maximum, seat ranges do not overlap, and Moderate is below Noisy.";
+    return;
+  }
+  applySettings(next, "Settings applied.");
+});
+document.getElementById("resetSettings").addEventListener("click", () => {
+  applySettings(defaults, "Defaults restored.");
+  fillSettings();
+});
 
 loop();
 </script>
