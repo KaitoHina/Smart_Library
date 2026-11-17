@@ -1,28 +1,46 @@
 /*
   Smart Library - seat availability + noise monitoring (Arduino Mega 2560)
   4 IR seat sensors (analog), analog mic, mmWave presence (OUT pin), SSD1306 OLED,
-  RGB LED, seat LEDs, buzzer, 2 buttons. No delay(): everything uses millis().
+  RGB LED, seat LEDs, buzzer, 2 buttons. Sensor timing uses millis(); WiFiEsp
+  network requests are synchronous.
 
-  Telemetry is printed as one JSON line every 500 ms at 115200 baud.
-  The legacy distanceCm / noiseAmplitude / radar fields are kept so the existing
-  dashboard bridge continues to work; newer fields expose the firmware's debounced
-  seat state, noise classification and radar cross-check.
+  Telemetry is sent to the dashboard over Wi-Fi every second.
+  The Mega controls an ESP8266 running AT firmware through Serial1; set
+  WIFI_TELEMETRY to 0 to print JSON over USB instead. Legacy fields remain.
+  Telemetry includes seat, noise, mode and radar state.
 */
+#define WIFI_TELEMETRY 1 // 1 = WiFiEsp POST, 0 = USB JSON output
+
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <stdio.h>
+#if WIFI_TELEMETRY
+#include <WiFiEsp.h>
+#endif
+
 #include "GP2Y0A21YK0F.h"
+#include "MyLD2410.h"
 
 // =====================  CONFIG  =====================
 #define DEMO_TIMING 0          // 1 = shorter seat debounce for quick demos
 #define SERIAL_CSV  0          // 1 = also print one CSV line per second for test data
+#if WIFI_TELEMETRY
+const char* const WIFI_SSID = "EE3070_P1615_1";
+const char* const WIFI_PASSWORD = "EE3070P1615";
+const char* const DASHBOARD_HOST = "192.168.1.23"; // PC LAN IPv4 address
+const uint16_t DASHBOARD_PORT = 8080;
+const unsigned long ESP_AT_BAUD = 115200; // Must match the ESP8266 AT firmware
+const unsigned long WIFI_RETRY_MS = 15000;
+const unsigned long WIFI_CHECK_MS = 5000;
+#endif
 
 // ---- pins ----
 constexpr uint8_t NUM_SEATS = 4;
-constexpr uint8_t SEAT_A_PIN = A1;
-constexpr uint8_t SEAT_B_PIN = A2;
-constexpr uint8_t SEAT_C_PIN = A3;
-constexpr uint8_t SEAT_D_PIN = A4;
+constexpr uint8_t SEAT_A_PIN = A1;  // IR sensor analog input
+constexpr uint8_t SEAT_B_PIN = A2;  // IR sensor analog input
+constexpr uint8_t SEAT_C_PIN = A3;  // IR sensor analog input
+constexpr uint8_t SEAT_D_PIN = A4;  // IR sensor analog input
 constexpr uint8_t SEAT_PIN[NUM_SEATS] = { SEAT_A_PIN, SEAT_B_PIN, SEAT_C_PIN, SEAT_D_PIN };
 constexpr uint8_t SEAT_LED_PIN[NUM_SEATS] = { 27, 28, 29, 30 };  // per-seat LEDs (via resistor)
 constexpr uint8_t MMWAVE_OUT_PIN = 26;                           // radar OUT (HIGH = presence)
@@ -49,7 +67,7 @@ const unsigned long BEEP_LEN_MS     = 150;
 const unsigned long DISAGREE_MS     = 5000;    // disagreement must persist this long
 const unsigned long RADAR_WARMUP_MS = 10000;   // ignore radar after power-up
 const unsigned long OLED_PERIOD_MS  = 250;
-const unsigned long TELEMETRY_MS    = 500;
+const unsigned long TELEMETRY_MS    = 1000;
 
 // ---- noise thresholds (peak-to-peak ADC counts) - CALIBRATE THESE ----
 // index: 0 = Silent, 1 = Quiet, 2 = Collaborative
@@ -108,14 +126,20 @@ bool btnLast[2] = { true, true }, btnStable[2] = { true, true };
 bool btnEvent[2] = { false, false };
 unsigned long btnChanged[2] = { 0, 0 };
 
+String telemetryJson;
+#if WIFI_TELEMETRY
+WiFiEspClient telemetryClient;
+bool wifiConnected = false, wifiAttempted = false, postFailed = false;
+unsigned long lastWifiAttempt = 0, lastWifiCheck = 0;
+#endif
+
 // =====================  HELPERS  =====================
 char seatId(uint8_t i) {
   return char('A' + i);
 }
 
-void printJsonBool(bool value) {
-  if (value) Serial.print(F("true"));
-  else Serial.print(F("false"));
+void appendJsonBool(String& json, bool value) {
+  json += value ? F("true") : F("false");
 }
 
 void setRGB(bool r, bool g, bool b) {
@@ -128,6 +152,12 @@ uint8_t occupiedCount() {
   uint8_t n = 0;
   for (uint8_t i = 0; i < NUM_SEATS; i++) if (seatOcc[i]) n++;
   return n;
+}
+
+void resetNoiseWindow() {
+  nMin = 1023;
+  nMax = 0;
+  nWinStart = millis();
 }
 
 // =====================  SEATS  =====================
@@ -329,42 +359,109 @@ void logCsv(unsigned long now) {
 #endif
 }
 
+void buildTelemetryJson() {
+  telemetryJson = F("{\"distanceCm\":{");
+  for (uint8_t i = 0; i < NUM_SEATS; i++) {
+    if (i != 0) telemetryJson += ',';
+    telemetryJson += '"'; telemetryJson += seatId(i); telemetryJson += F("\":");
+    if (seatDistance[i] < 0) telemetryJson += F("null");
+    else telemetryJson += String(seatDistance[i], 1);
+  }
+
+  telemetryJson += F("},\"seatOccupied\":{");
+  for (uint8_t i = 0; i < NUM_SEATS; i++) {
+    if (i != 0) telemetryJson += ',';
+    telemetryJson += '"'; telemetryJson += seatId(i); telemetryJson += F("\":");
+    appendJsonBool(telemetryJson, seatOcc[i]);
+  }
+
+  telemetryJson += F("},\"freeCount\":");
+  telemetryJson += String((unsigned int)freeCount);
+  telemetryJson += F(",\"noiseAmplitude\":");
+  telemetryJson += String((unsigned int)noiseAvg);
+  telemetryJson += F(",\"noiseLevel\":\"");
+  telemetryJson += LEVEL_NAME[noiseLevel];
+  telemetryJson += F("\",\"noiseStage\":");
+  telemetryJson += String((unsigned int)noiseStage);
+  telemetryJson += F(",\"noiseWarning\":");
+  appendJsonBool(telemetryJson, warningActive);
+  telemetryJson += F(",\"mode\":\"");
+  telemetryJson += MODE_NAME[zoneMode];
+  telemetryJson += F("\",\"radar\":");
+  telemetryJson += zonePresent ? '1' : '0';
+  telemetryJson += F(",\"disagree\":");
+  appendJsonBool(telemetryJson, disagree);
+  telemetryJson += '}';
+}
+
+#if WIFI_TELEMETRY
+void updateWiFi(unsigned long now) {
+  if (wifiConnected) {
+    if (now - lastWifiCheck < WIFI_CHECK_MS) return;
+    lastWifiCheck = now;
+    wifiConnected = WiFi.status() == WL_CONNECTED;
+    if (wifiConnected) return;
+    Serial.println(F("EVENT WiFi disconnected"));
+  }
+
+  if (wifiAttempted && now - lastWifiAttempt < WIFI_RETRY_MS) return;
+  wifiAttempted = true;
+  lastWifiAttempt = now;
+  Serial.println(F("EVENT WiFi connecting"));
+  wifiConnected = WiFi.begin(WIFI_SSID, WIFI_PASSWORD) == WL_CONNECTED;
+  Serial.println(wifiConnected ? F("EVENT WiFi connected") : F("EVENT WiFi connect failed"));
+  resetNoiseWindow();
+}
+
+bool postTelemetry(const String& payload) {
+  if (!wifiConnected) return false;
+  if (!telemetryClient.connect(DASHBOARD_HOST, DASHBOARD_PORT)) {
+    resetNoiseWindow();
+    return false;
+  }
+
+  char header[192];
+  const int headerLength = snprintf(
+    header, sizeof(header),
+    "POST /api/telemetry HTTP/1.1\r\n"
+    "Host: %s:%u\r\n"
+    "Content-Type: application/json\r\n"
+    "Content-Length: %u\r\n"
+    "Connection: close\r\n\r\n",
+    DASHBOARD_HOST,
+    (unsigned int)DASHBOARD_PORT,
+    (unsigned int)payload.length()
+  );
+  if (headerLength < 0 || (size_t)headerLength >= sizeof(header)) {
+    telemetryClient.stop();
+    return false;
+  }
+
+  const size_t sentHeader = telemetryClient.write((const uint8_t*)header, (size_t)headerLength);
+  if (sentHeader != (size_t)headerLength) {
+    telemetryClient.stop();
+    resetNoiseWindow();
+    return false;
+  }
+  const size_t sentBody = telemetryClient.write((const uint8_t*)payload.c_str(), payload.length());
+  telemetryClient.stop();
+  resetNoiseWindow();
+  return sentHeader == (size_t)headerLength && sentBody == payload.length();
+}
+#endif
+
 void logTelemetry(unsigned long now) {
   if (now - lastTelemetry < TELEMETRY_MS) return;
   lastTelemetry = now;
-
-  Serial.print(F("{\"distanceCm\":{"));
-  for (uint8_t i = 0; i < NUM_SEATS; i++) {
-    if (i != 0) Serial.print(',');
-    Serial.print('"'); Serial.print(seatId(i)); Serial.print(F("\":"));
-    if (seatDistance[i] < 0) Serial.print(F("null"));
-    else Serial.print(seatDistance[i], 1);
-  }
-
-  Serial.print(F("},\"seatOccupied\":{"));
-  for (uint8_t i = 0; i < NUM_SEATS; i++) {
-    if (i != 0) Serial.print(',');
-    Serial.print('"'); Serial.print(seatId(i)); Serial.print(F("\":"));
-    printJsonBool(seatOcc[i]);
-  }
-
-  Serial.print(F("},\"freeCount\":"));
-  Serial.print(freeCount);
-  Serial.print(F(",\"noiseAmplitude\":"));
-  Serial.print(noiseAvg);
-  Serial.print(F(",\"noiseLevel\":\""));
-  Serial.print(LEVEL_NAME[noiseLevel]);
-  Serial.print(F("\",\"noiseStage\":"));
-  Serial.print(noiseStage);
-  Serial.print(F(",\"noiseWarning\":"));
-  printJsonBool(warningActive);
-  Serial.print(F(",\"mode\":\""));
-  Serial.print(MODE_NAME[zoneMode]);
-  Serial.print(F("\",\"radar\":"));
-  Serial.print(zonePresent ? 1 : 0);
-  Serial.print(F(",\"disagree\":"));
-  printJsonBool(disagree);
-  Serial.println('}');
+  buildTelemetryJson();
+#if WIFI_TELEMETRY
+  const bool sent = postTelemetry(telemetryJson);
+  if (sent && postFailed) Serial.println(F("EVENT dashboard POST restored"));
+  else if (!sent && !postFailed) Serial.println(F("EVENT dashboard POST failed"));
+  postFailed = !sent;
+#else
+  Serial.println(telemetryJson);
+#endif
 }
 
 // =====================  SETUP / LOOP  =====================
@@ -396,9 +493,15 @@ void setup() {
   }
   freeCount = NUM_SEATS - occupiedCount();
 
-  unsigned long now = millis();
-  nWinStart = now;
   Serial.println(F("Smart Library started"));
+#if WIFI_TELEMETRY
+  telemetryJson.reserve(320);
+  Serial1.begin(ESP_AT_BAUD);
+  WiFi.init(&Serial1);
+  if (WiFi.status() == WL_NO_SHIELD) Serial.println(F("EVENT ESP8266 AT module not responding"));
+  else updateWiFi(millis());
+#endif
+  nWinStart = millis();
 #if SERIAL_CSV
   Serial.println(F("CSV,ms,seats,free,noiseAvg,level,stage,presence,mode"));
 #endif
@@ -414,5 +517,8 @@ void loop() {
   updateOutputs(now);
   updateDisplay(now);
   logCsv(now);
-  logTelemetry(now);
+#if WIFI_TELEMETRY
+  updateWiFi(millis());
+#endif
+  logTelemetry(millis());
 }
