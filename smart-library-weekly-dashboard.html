@@ -207,6 +207,22 @@
   #diagnostics input { width: 6.5rem; }
   #diagnostics output { display: block; margin-top: .7rem; }
   #diagnostics .diag-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: .4rem; }
+  .table-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(8px, 2vw, 20px); padding: 8px 16px 16px; }
+  .map-caption, .map-legend { padding: 0 16px; font-size: 13px; color: var(--muted); }
+  .table-marker { display: grid; justify-items: center; gap: 6px; padding: 12px 4px; background: #faf8f2c9; border-color: transparent; }
+  .table-marker.hardware { border-color: var(--navy); background: #fffdf7; box-shadow: var(--shadow); }
+  .table-marker:focus-visible, #backToTables:focus-visible { outline: 3px solid var(--navy); outline-offset: 3px; }
+  .table-marker small { color: var(--muted); font-size: 11px; }
+  .seat-circle { width: clamp(52px, 9vw, 90px); aspect-ratio: 1; border-radius: 50%; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; background: var(--panel); border: 3px solid #b7b7ae; }
+  .hardware .seat-circle { border-color: var(--navy); }
+  .seat-circle span { display: grid; place-items: center; font-size: 12px; color: white; background: #929995; }
+  .seat-circle .free { background: var(--free); }
+  .seat-circle .busy { background: var(--busy); }
+  .seat-circle .check { background: var(--warn); }
+  #tableZoom { padding: 20px; }
+  #tableZoom .table { max-width: 480px; margin: 24px auto; }
+  #tableZoom h3 { text-align: center; color: var(--navy); }
+  #mapMessage { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -235,16 +251,19 @@
     <section class="card">
       <h2>Reading area</h2>
       <div class="floor" id="floor">
-        <div class="zone-label">Top view · Only one table has sensors</div>
-        <div class="ghost" style="left:4%; top:14%;">Other table<br>Not monitored</div>
-        <div class="ghost" style="right:4%; top:14%;">Other table<br>Not monitored</div>
-        <div class="ghost" style="left:4%; bottom:8%;">Other table<br>Not monitored</div>
-        <div class="table-wrap">
-          <div class="scope">Smart Library sensing zone · This project only</div>
+        <div id="tableOverview">
+          <p class="map-caption">Reading area · 9 tables · 1 hardware table</p>
+          <div class="table-map" id="tableMap"></div>
+          <p class="map-legend">● Green = Free · ● Blue = Occupied · Amber = Pending · Grey = Offline</p>
+        </div>
+        <div id="tableZoom" hidden>
+          <button type="button" id="backToTables">← All tables</button>
+          <h3>Table 05 · Hardware table</h3>
           <div class="table" id="seats"></div>
+          <div class="detail" id="detail"></div>
         </div>
       </div>
-      <div class="detail" id="detail"></div>
+      <p id="mapMessage" role="status">Select Table 05 to inspect its four seats. Other tables have no connected hardware.</p>
     </section>
     <div class="side">
       <section class="card" id="noiseCard">
@@ -273,6 +292,8 @@
     <label>Decision source
       <select name="source"><option value="firmware">Firmware (default)</option><option value="dashboard">Dashboard thresholds</option></select>
     </label>
+    <label>Seat confirmation (seconds)<input name="seatSeconds" type="number" min="0" step="any" required></label>
+    <p>Each live seat must keep the same candidate state for this duration before it changes. New connections start unconfirmed. Missing or ambiguous readings reset the timer.</p>
     <div id="seatSettings"></div>
     <fieldset><legend>Noise thresholds</legend><div class="diag-grid">
       <label>Moderate from (ADC)<input name="moderateFrom" type="number" min="0" max="1023" step="any" required></label>
@@ -308,14 +329,15 @@ const CONFIG = {
 };
 
 const ids = Object.keys(CONFIG.seats);
-const defaults = { source: "firmware", seats: CONFIG.seats, noise: CONFIG.noise };
+const defaults = { source: "firmware", seatConfirmMs: 10000, seats: CONFIG.seats, noise: CONFIG.noise };
 const settingsKey = "smart-library.dashboard.thresholds.v1";
 let settings = defaults;
+let seatHistory = {};
 
 function validSettings(value) {
   const validRange = range => Array.isArray(range) && range.length === 2 &&
     range.every(n => Number.isFinite(n) && n >= 0) && range[0] <= range[1];
-  return ["firmware", "dashboard"].includes(value?.source) && ids.every(id => {
+  return Number.isFinite(value?.seatConfirmMs) && value.seatConfirmMs >= 0 && ["firmware", "dashboard"].includes(value?.source) && ids.every(id => {
     const seat = value.seats?.[id];
     return validRange(seat?.occupied) && validRange(seat?.free) &&
       (seat.occupied[1] < seat.free[0] || seat.free[1] < seat.occupied[0]);
@@ -325,6 +347,7 @@ function validSettings(value) {
 }
 try {
   const saved = JSON.parse(localStorage.getItem(settingsKey));
+  if (saved && saved.seatConfirmMs === undefined) saved.seatConfirmMs = defaults.seatConfirmMs;
   if (validSettings(saved)) settings = saved;
 } catch { /* Defaults remain available if storage is disabled. */ }
 const labels = { free: "Free", busy: "Occupied", check: "Needs a check", stale: "No update" };
@@ -335,6 +358,41 @@ let events = [], previous = {}, noisySince = null, noisyAlert = false;
 
 function log(message, time = Date.now()) {
   events = [[clock(time), message], ...events].slice(0, 12);
+}
+
+function confirmSeat(id, candidate, fresh) {
+  if (mode !== "live") return { state: candidate, note: "" };
+  if (!fresh) {
+    delete seatHistory[id];
+    return { state: "stale", note: "" };
+  }
+  let history = seatHistory[id];
+  const timestamp = packet.receivedAt;
+  if (!history || timestamp - history.last >= CONFIG.staleAfterMs || timestamp < history.last) {
+    history = { confirmed: "check", candidate: null, since: timestamp, last: timestamp };
+    seatHistory[id] = history;
+  }
+  history.last = timestamp;
+  if (!["free", "busy"].includes(candidate)) {
+    history.candidate = null;
+    return { state: history.confirmed, note: "Invalid or ambiguous reading. Confirmation timer reset." };
+  }
+  if (candidate === history.confirmed) {
+    history.candidate = null;
+    return { state: history.confirmed, note: "" };
+  }
+  if (candidate !== history.candidate) {
+    history.candidate = candidate;
+    history.since = timestamp;
+  }
+  const elapsed = timestamp - history.since;
+  if (elapsed >= settings.seatConfirmMs) {
+    history.confirmed = candidate;
+    history.candidate = null;
+    return { state: history.confirmed, note: "" };
+  }
+  return { state: history.confirmed,
+    note: `Confirming ${labels[candidate]}: ${(elapsed / 1000).toFixed(1)} / ${settings.seatConfirmMs / 1000} s.` };
 }
 
 function view(now = Date.now()) {
@@ -348,14 +406,16 @@ function view(now = Date.now()) {
     const ranges = thresholds.seats[id];
     const firmwareOccupied = firmwareSeat(id);
     const occupied = inRange(distance, ranges.occupied), free = inRange(distance, ranges.free);
-    const state = !fresh ? "stale" :
+    const candidate = !fresh ? "stale" :
       firmwareOccupied !== null ? (firmwareOccupied ? "busy" : "free") :
       occupied === free ? "check" : occupied ? "busy" : "free";
+    const confirmation = confirmSeat(id, candidate, fresh);
+    const state = confirmation.state;
     const sensor = !fresh ? "No fresh reading." :
       firmwareOccupied !== null ? "Debounced by the firmware's calibrated IR threshold." :
       state === "check" ? "Reading missing or outside an unambiguous range." :
       "Based on the configured infrared distance range.";
-    return { id, distance, state, label: labels[state], sensor };
+    return { id, distance, state, label: labels[state], sensor: sensor + " " + confirmation.note };
   });
   const raw = fresh ? packet.radar : null;
   const present = raw === CONFIG.radar.presentValue ? true : raw === CONFIG.radar.absentValue ? false : null;
@@ -376,8 +436,7 @@ function view(now = Date.now()) {
     amplitude >= thresholds.noise.moderateFrom ? "Moderate" : "Quiet";
   const firmwareWarning = !override && fresh && typeof packet.noiseWarning === "boolean" ? packet.noiseWarning : null;
   const warning = fresh && (firmwareWarning ?? noisyAlert);
-  const firmwareFree = !override && fresh && Number.isInteger(packet.freeCount) ? packet.freeCount : null;
-  const freeCount = firmwareFree === null ? seats.filter(s => s.state === "free").length : firmwareFree;
+  const freeCount = seats.filter(s => s.state === "free").length;
   const busyCount = seats.filter(s => s.state === "busy").length;
   const zoneMode = fresh && typeof packet.mode === "string" && ["SILENT", "QUIET", "COLLAB"].includes(packet.mode) ? packet.mode : null;
   const linkStatus = !reachable ? "Service unreachable" : !packet ? "Waiting for data" : !fresh ? "Data stale" : "Receiving data";
@@ -485,6 +544,7 @@ document.querySelector(".scenarios").addEventListener("click", event => {
   packet = mode === "live" ? null : sample();
   if (mode === "stale") packet.receivedAt -= CONFIG.staleAfterMs;
   reachable = true;
+  seatHistory = {};
   events = []; previous = {}; noisySince = null; noisyAlert = false;
   document.getElementById("sourcePill").textContent = mode === "live" ? "Live telemetry" : "Simulated data · Demo";
   document.querySelectorAll("[data-scene]").forEach(el => {
@@ -500,6 +560,23 @@ async function loop() {
 }
 function render() {
   const scene = view();
+  const map = document.getElementById("tableMap");
+  const mapSignature = scene.seats.map(seat => seat.state).join("|");
+  if (map.dataset.signature !== mapSignature) {
+    map.dataset.signature = mapSignature;
+    map.innerHTML = Array.from({ length: 9 }, (_, index) => {
+      const hardware = index === 4;
+      const number = String(index + 1).padStart(2, "0");
+      const status = hardware ? (scene.link.ok ? "Hardware · Inspect" : "Hardware · Offline") : "Offline · Not connected";
+      const quarters = ids.map((id, seatIndex) => {
+        const state = hardware ? scene.seats[seatIndex].state : "stale";
+        return `<span class="${state}" title="Seat ${id}: ${hardware ? labels[state] : "Offline"}">${id}</span>`;
+      }).join("");
+      return `<button type="button" class="table-marker ${hardware ? "hardware" : ""}" data-table="${number}" aria-label="Table ${number}, ${status}">
+        <span class="seat-circle" aria-hidden="true">${quarters}</span>
+        <strong>Table ${number}</strong><small>${status}</small></button>`;
+    }).join("");
+  }
   const free = scene.freeCount;
   const busy = scene.busyCount;
   const summary = scene.link.ok
@@ -543,6 +620,25 @@ function render() {
     `<li><time>${time}</time>${text}</li>`).join("");
 }
 
+document.getElementById("tableMap").addEventListener("click", event => {
+  const button = event.target.closest("[data-table]");
+  if (!button) return;
+  if (button.dataset.table !== "05") {
+    document.getElementById("mapMessage").textContent = `Table ${button.dataset.table} is offline. No hardware is connected.`;
+    return;
+  }
+  document.getElementById("tableOverview").hidden = true;
+  document.getElementById("tableZoom").hidden = false;
+  document.getElementById("mapMessage").textContent = "Table 05 · Only these four seats are monitored.";
+  document.getElementById("backToTables").focus();
+});
+document.getElementById("backToTables").addEventListener("click", () => {
+  document.getElementById("tableZoom").hidden = true;
+  document.getElementById("tableOverview").hidden = false;
+  document.getElementById("mapMessage").textContent = "Select Table 05 to inspect its four seats. Other tables have no connected hardware.";
+  document.querySelector('[data-table="05"]').focus();
+});
+
 function labelIcon(state) {
   if (state === "free") return "○";
   if (state === "busy") return "●";
@@ -573,6 +669,7 @@ document.getElementById("seatSettings").innerHTML = ids.map(id =>
 
 function fillSettings() {
   input("source").value = settings.source;
+  input("seatSeconds").value = settings.seatConfirmMs / 1000;
   for (const id of ids) for (const kind of ["occupied", "free"]) {
     settings.seats[id][kind].forEach((number, index) => { input(`${id}-${kind}-${index}`).value = number; });
   }
@@ -604,6 +701,7 @@ function applySettings(next, message) {
   noisySince = null;
   noisyAlert = false;
   previous = {};
+  seatHistory = {};
   update();
 }
 
@@ -618,6 +716,7 @@ settingsForm.addEventListener("submit", event => {
   event.preventDefault();
   const next = {
     source: input("source").value,
+    seatConfirmMs: input("seatSeconds").valueAsNumber * 1000,
     seats: Object.fromEntries(ids.map(id => [id, {
       occupied: [0, 1].map(i => input(`${id}-occupied-${i}`).valueAsNumber),
       free: [0, 1].map(i => input(`${id}-free-${i}`).valueAsNumber)
