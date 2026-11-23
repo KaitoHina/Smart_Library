@@ -3,6 +3,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 let latest = null;
+const noiseMonitor = require('./dashboard-noise-monitor.cjs');
 const ids = ['A', 'B', 'C', 'D'];
 const levels = new Set(['QUIET', 'MODERATE', 'NOISY']);
 const modes = new Set(['SILENT', 'QUIET', 'COLLAB']);
@@ -20,6 +21,7 @@ const boolValue = value => value === true || value === 1 ? true : value === fals
 
 http.createServer(async (req, res) => {
   const path = req.url.split('?')[0];
+  if (path === '/admin' || path.startsWith('/admin/')) return noiseMonitor.handleAdmin(req, res, port);
   if (req.method === 'GET' && (path === '/' || path === '/smart-library-weekly-dashboard.html')) {
     try {
       const html = readFileSync(page);
@@ -100,6 +102,7 @@ http.createServer(async (req, res) => {
       ...optional,
       receivedAt: Date.now()
     };
+    noiseMonitor.receive(latest);
     return json(res, 202, { accepted: true });
   } catch {
     return json(res, 400, { error: 'Invalid JSON packet' });
