@@ -102,6 +102,14 @@ curl.exe -i -X POST "$publicUrl/api/telemetry" -H 'Content-Type: application/jso
 
 ## 6. 設定面板和停止展示
 
+### 學校電腦的管理員頁
+
+啟動 Dashboard server 後，在同一部電腦開啟 `http://localhost:8082`，即可查看 Table 05 持續噪音事件、30 秒偏吵比例、分級提醒、已知悉和已處理紀錄。首次需要收集完整 30 秒資料。
+
+管理頁使用獨立的 8082 listener，只綁定 127.0.0.1，並拒絕帶代理轉發標頭的請求。手機透過電腦區網 IP 無法連入 8082。Cloudflare 只指向本指引的 8081，管理頁及其 API 不在公開入口的允許清單內。請保持 Tunnel 指向 8081。
+
+使用此電腦的其他本機使用者亦能開管理頁，這個版本以裝置範圍限制存取。事件暫存於記憶體，重啟 server 會清除。修改 `dashboard-noise-monitor.cjs` 頂部的 CONFIG 後重啟 server，即可調整窗口、比例、安靜結束時間和分級門檻。已處理只記錄時間，仍然偏吵時會繼續監察。無效資料或超過 5 秒未更新會中斷事件，重連後重新收集窗口。
+
 訪客仍可打開 Diagnostics 並查看資料。Dashboard 自訂門檻儲存在各自瀏覽器，只影響該瀏覽器的顯示。公開入口的唯讀限制保護 server 上的感測器數據。展示時各裝置選 Firmware，可以對照同一份板上判定。
 
 結束時依次在 Cloudflare、唯讀入口、Dashboard 三個視窗按 Ctrl+C。電腦 server 或 Tunnel 停止後，手機就無法繼續取得即時資料。

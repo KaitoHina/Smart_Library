@@ -3,6 +3,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 let latest = null;
+const noiseMonitor = require('./dashboard-noise-monitor.cjs');
 const ids = ['A', 'B', 'C', 'D'];
 const levels = new Set(['QUIET', 'MODERATE', 'NOISY']);
 const modes = new Set(['SILENT', 'QUIET', 'COLLAB']);
@@ -100,6 +101,7 @@ http.createServer(async (req, res) => {
       ...optional,
       receivedAt: Date.now()
     };
+    noiseMonitor.receive(latest);
     return json(res, 202, { accepted: true });
   } catch {
     return json(res, 400, { error: 'Invalid JSON packet' });
