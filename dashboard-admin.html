@@ -23,7 +23,7 @@
 <main>
   <p class="muted">SMART LIBRARY · LOCAL ADMINISTRATION</p>
   <h1>桌區噪音監察</h1>
-  <p>本機管理頁 · <a href="http://localhost:8080">開啟 Dashboard</a></p>
+  <p>本機管理頁 · <a href="/">開啟 Dashboard</a></p>
   <p id="connection" role="status">正在連接監察服務…</p>
   <section id="event" data-level="0">
     <h2>Table 05</h2>
@@ -54,7 +54,7 @@ const duration = ms => Math.floor(ms / 60000) + '分 ' + Math.floor(ms / 1000 % 
 let pending = false;
 async function refresh() {
   try {
-    const response = await fetch('/status', { cache: 'no-store' });
+    const response = await fetch('/admin/status', { cache: 'no-store' });
     if (!response.ok) throw Error('服務回應 ' + response.status);
     const data = await response.json();
     get('connection').textContent = '最後收到感測資料 ' + time(data.lastReceivedAt);
@@ -91,7 +91,7 @@ for (const action of ['acknowledge','handled']) get(action).addEventListener('cl
   pending = true;
   for (const name of ['acknowledge','handled']) get(name).disabled = true;
   try {
-    const response = await fetch('/' + action, { method: 'POST' });
+    const response = await fetch('/admin/' + action, { method: 'POST' });
     if (!response.ok) throw Error('操作失敗 ' + response.status);
   } catch (error) { get('connection').textContent = error.message; }
   finally { pending = false; await refresh(); }

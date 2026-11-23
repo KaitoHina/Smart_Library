@@ -1,4 +1,3 @@
-const http = require('node:http');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
@@ -11,7 +10,6 @@ const CONFIG = {
   fallbackNoisyAmplitude: 100,
   levelsMs: [30000, 60000, 300000, 600000]
 };
-const adminPort = Number(process.env.ADMIN_PORT || 8082);
 const samples = [];
 const history = [];
 let last = null;
@@ -88,34 +86,31 @@ function respond(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
-http.createServer((req, res) => {
+function handleAdmin(req, res, port) {
+  const adminPort = port;
   const hosts = [`localhost:${adminPort}`, `127.0.0.1:${adminPort}`];
   // This listener is separate from the public dashboard. Reject forwarded requests too.
-  if (!hosts.includes(req.headers.host) || Object.keys(req.headers).some(name =>
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) || !hosts.includes(req.headers.host) || Object.keys(req.headers).some(name =>
     name === 'forwarded' || name.startsWith('x-forwarded-') || name.startsWith('cf-'))) {
     return respond(res, 403, { error: 'Local computer access only' });
   }
-  if (req.method === 'GET' && req.url === '/') {
+  if (req.method === 'GET' && req.url === '/admin' || req.method === 'GET' && req.url === '/admin/') {
     try {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(readFileSync(join(__dirname, 'dashboard-admin.html')));
     } catch { return respond(res, 500, { error: 'Admin page unavailable' }); }
   }
-  if (req.method === 'GET' && req.url === '/status') return respond(res, 200, snapshot());
-  if (req.method === 'POST' && ['/acknowledge', '/handled'].includes(req.url)) {
+  if (req.method === 'GET' && req.url === '/admin/status') return respond(res, 200, snapshot());
+  if (req.method === 'POST' && ['/admin/acknowledge', '/admin/handled'].includes(req.url)) {
     if (!hosts.some(host => req.headers.origin === `http://${host}`)) {
       return respond(res, 403, { error: 'Local origin required' });
     }
     refresh(Date.now());
     if (!active) return respond(res, 409, { error: 'No active event' });
-    active[req.url === '/handled' ? 'handledAt' : 'acknowledgedAt'] = Date.now();
+    active[req.url === '/admin/handled' ? 'handledAt' : 'acknowledgedAt'] = Date.now();
     return respond(res, 200, snapshot());
   }
   respond(res, 404, { error: 'Not found' });
-}).on('error', error => {
-  console.error('Admin listener failed:', error.message);
-}).listen(adminPort, '127.0.0.1', () => {
-  console.log(`Local administrator page: http://localhost:${adminPort}`);
-});
+}
 
-module.exports = { receive };
+module.exports = { receive, handleAdmin };

@@ -96,17 +96,21 @@ Tunnel 必須指向 **8081**，確保公網經過唯讀入口。ESP8266 繼續 P
 $publicUrl = 'https://填入你的網址.trycloudflare.com'
 curl.exe -i "$publicUrl/api/telemetry"
 curl.exe -i -X POST "$publicUrl/api/telemetry" -H 'Content-Type: application/json' --data '{}'
+curl.exe -i "$publicUrl/admin"
+curl.exe -i "$publicUrl/admin/status"
 ```
 
 第一個請求應收到 HTTP 200 和最新 JSON。第二個應收到 HTTP 405，代表公開入口拒絕寫入。最後在手機對照實際坐下、離座或噪音警示，確認畫面和時間更新。
+
+兩個公開 admin 請求都應收到 HTTP 404。再用手機開 `http://電腦區網IP:8080/admin`，應收到 HTTP 403。本機直接開 `http://localhost:8080/admin` 才能進入。8082 已取消。
 
 ## 6. 設定面板和停止展示
 
 ### 學校電腦的管理員頁
 
-啟動 Dashboard server 後，在同一部電腦開啟 `http://localhost:8082`，即可查看 Table 05 持續噪音事件、30 秒偏吵比例、分級提醒、已知悉和已處理紀錄。首次需要收集完整 30 秒資料。
+啟動 Dashboard server 後，在同一部電腦開啟 `http://localhost:8080/admin`，即可查看 Table 05 持續噪音事件、30 秒偏吵比例、分級提醒、已知悉和已處理紀錄。首次需要收集完整 30 秒資料。
 
-管理頁使用獨立的 8082 listener，只綁定 127.0.0.1，並拒絕帶代理轉發標頭的請求。手機透過電腦區網 IP 無法連入 8082。Cloudflare 只指向本指引的 8081，管理頁及其 API 不在公開入口的允許清單內。請保持 Tunnel 指向 8081。
+管理頁及 /admin/ API 只接受 loopback 來源、localhost 或 127.0.0.1 的 Host，並拒絕帶代理轉發標頭的請求。手機透過電腦區網 IP 無法存取管理頁。Cloudflare 只指向本指引的 8081，管理頁及其 API 不在公開入口的允許清單內。請保持 Tunnel 指向 8081。
 
 使用此電腦的其他本機使用者亦能開管理頁，這個版本以裝置範圍限制存取。事件暫存於記憶體，重啟 server 會清除。修改 `dashboard-noise-monitor.cjs` 頂部的 CONFIG 後重啟 server，即可調整窗口、比例、安靜結束時間和分級門檻。已處理只記錄時間，仍然偏吵時會繼續監察。無效資料或超過 5 秒未更新會中斷事件，重連後重新收集窗口。
 

@@ -85,3 +85,14 @@ Use `ipconfig` on Windows to find the computer's Ethernet IPv4 address. The ESP8
 To switch back to USB telemetry, set `WIFI_TELEMETRY` to `0`, upload the Mega sketch again, and use `.\start-dashboard.ps1 -Port COMx`.
 
 For a trusted demo LAN, set `$env:DASHBOARD_HOST = '0.0.0.0'` in PowerShell before starting the server. Use the computer's LAN IP in the browser and hardware sender, with port 8080. The telemetry endpoint has no authentication, so keep it on the trusted demo network.
+
+
+## Seat presence and administrator page
+
+Live hardware is the default when served over HTTP. Use Admin on the school computer to open /admin on the same server port. Admin requires a direct loopback connection with a localhost or 127.0.0.1 host. The public 8081 proxy does not forward admin routes. Port 8082 is no longer used.
+
+Firmware mode uses seatOccupied as object detection. Dashboard mode uses distanceCm, with defaults 10–70 cm for an object and >70–80 cm for free. A fresh null distance defaults to Free only in Dashboard/fallback mode; it represents an invalid distance conversion, and Diagnostics allows selecting Unknown instead. Firmware flags take priority in Firmware mode.
+
+Radar 0 plus a detected object produces Items detected; radar 1 plus a detected object produces Occupied. Items are counted separately from available seats. A radar without a valid presence code leaves detected objects unknown. Area presence cannot determine which seat actually contains a person.
+
+Each seat transition requires 10 seconds of consistent candidates, including Items detected. Configure seatConfirmMs beside defaults in the HTML or Seat confirmation in Diagnostics. First connection and reconnection start pending. Missing/ambiguous candidates reset the timer. Offline data remains offline regardless of the null-distance policy. Browser settings use a new v2 key so the revised defaults apply without older range settings overriding them.

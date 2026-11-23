@@ -21,6 +21,7 @@ const boolValue = value => value === true || value === 1 ? true : value === fals
 
 http.createServer(async (req, res) => {
   const path = req.url.split('?')[0];
+  if (path === '/admin' || path.startsWith('/admin/')) return noiseMonitor.handleAdmin(req, res, port);
   if (req.method === 'GET' && (path === '/' || path === '/smart-library-weekly-dashboard.html')) {
     try {
       const html = readFileSync(page);

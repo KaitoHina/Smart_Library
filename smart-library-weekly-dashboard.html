@@ -223,6 +223,9 @@
   #tableZoom .table { max-width: 480px; margin: 24px auto; }
   #tableZoom h3 { text-align: center; color: var(--navy); }
   #mapMessage { color: var(--muted); font-size: 13px; }
+  .seat.items { background: #f6e6ce; color: #88521c; border-color: #cead7f; }
+  .seat-circle .items { background: #aa632b; }
+  #adminLink { align-self: center; color: var(--navy); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -238,13 +241,11 @@
 </header>
 <main>
   <div class="scenarios">
-    <span>Data source / demo scene</span>
-    <button type="button" data-scene="live">Live hardware</button>
-    <button type="button" data-scene="normal" class="active">Normal use</button>
-    <button type="button" data-scene="noisy">Area noisy</button>
-    <button type="button" data-scene="mismatch">Sensor mismatch</button>
-    <button type="button" data-scene="stale">Stale data</button>
+    <span>Data source</span>
+    <button type="button" data-scene="live" class="active">Live hardware</button>
+    <button type="button" data-scene="normal">Normal use</button>
   </div>
+  <a id="adminLink" href="/admin" hidden>Admin · noise monitoring</a>
   <button type="button" id="diagnosticsButton" hidden>Diagnostics &amp; settings</button>
   <section class="stats" id="stats"></section>
   <div class="grid">
@@ -254,7 +255,7 @@
         <div id="tableOverview">
           <p class="map-caption">Reading area · 9 tables · 1 hardware table</p>
           <div class="table-map" id="tableMap"></div>
-          <p class="map-legend">● Green = Free · ● Blue = Occupied · Amber = Pending · Grey = Offline</p>
+          <p class="map-legend">● Green = Free · ● Blue = Occupied · Brown = Items · Amber = Pending · Grey = Offline</p>
         </div>
         <div id="tableZoom" hidden>
           <button type="button" id="backToTables">← All tables</button>
@@ -287,20 +288,21 @@
   <p id="decisionSummary"></p>
   <details open><summary>Latest hardware packet</summary><pre id="packetPreview"></pre></details>
   <h3>Dashboard thresholds</h3>
-  <p>Firmware mode uses board decisions when available. Dashboard mode recalculates seats, noise and radar agreement. Board thresholds are not transmitted.</p>
+  <p>Firmware mode uses board seat flags and noise decisions. Dashboard mode uses adjustable distance and noise thresholds. Both modes combine seat detection with area radar. Board thresholds are not transmitted.</p>
   <form id="diagnosticsForm">
     <label>Decision source
       <select name="source"><option value="firmware">Firmware (default)</option><option value="dashboard">Dashboard thresholds</option></select>
     </label>
     <label>Seat confirmation (seconds)<input name="seatSeconds" type="number" min="0" step="any" required></label>
     <p>Each live seat must keep the same candidate state for this duration before it changes. New connections start unconfirmed. Missing or ambiguous readings reset the timer.</p>
+<label>Invalid distance policy<select name="nullIsFree"><option value="true">null = Free</option><option value="false">null = Unknown</option></select></label>
     <div id="seatSettings"></div>
     <fieldset><legend>Noise thresholds</legend><div class="diag-grid">
       <label>Moderate from (ADC)<input name="moderateFrom" type="number" min="0" max="1023" step="any" required></label>
       <label>Noisy from (ADC)<input name="noisyFrom" type="number" min="0" max="1023" step="any" required></label>
       <label>Alert after (seconds)<input name="seconds" type="number" min="0" step="any" required></label>
     </div></fieldset>
-    <p>Seat ranges include both endpoints. Outside both ranges, the seat needs a check. Dashboard radar comparison uses the recomputed seats and reports mismatches immediately.</p>
+    <p>Distance ranges are inclusive. At a shared boundary, object detection takes priority (default: 10–70 cm object, >70–80 cm free). null means an invalid distance conversion; the selected policy applies only to fresh packets. Radar separates detected objects into Occupied or Items detected.</p>
     <button type="submit">Apply settings</button>
     <button type="button" id="resetSettings">Restore defaults</button>
     <output id="settingsStatus" role="status"></output>
@@ -315,10 +317,10 @@ const CONFIG = {
   // Inclusive distance ranges in cm, per seat. Used only for legacy packets
   // and demo scenes; live firmware sends debounced seatOccupied flags.
   seats: {
-    A: { occupied: [10, 45], free: [55, 80] },
-    B: { occupied: [10, 45], free: [55, 80] },
-    C: { occupied: [10, 45], free: [55, 80] },
-    D: { occupied: [10, 45], free: [55, 80] }
+    A: { occupied: [10, 70], free: [70, 80] },
+    B: { occupied: [10, 70], free: [70, 80] },
+    C: { occupied: [10, 70], free: [70, 80] },
+    D: { occupied: [10, 70], free: [70, 80] }
   },
   // Microphone peak-to-peak amplitude over a sampling window (ADC counts).
   // Used only when the firmware does not send noiseLevel.
@@ -329,8 +331,9 @@ const CONFIG = {
 };
 
 const ids = Object.keys(CONFIG.seats);
-const defaults = { source: "firmware", seatConfirmMs: 10000, seats: CONFIG.seats, noise: CONFIG.noise };
-const settingsKey = "smart-library.dashboard.thresholds.v1";
+// Adjust seatConfirmMs here: all live Free / Occupied / Items transitions require this many milliseconds.
+const defaults = { source: "firmware", seatConfirmMs: 10000, nullIsFree: true, seats: CONFIG.seats, noise: CONFIG.noise };
+const settingsKey = "smart-library.dashboard.thresholds.v2";
 let settings = defaults;
 let seatHistory = {};
 
@@ -340,7 +343,7 @@ function validSettings(value) {
   return Number.isFinite(value?.seatConfirmMs) && value.seatConfirmMs >= 0 && ["firmware", "dashboard"].includes(value?.source) && ids.every(id => {
     const seat = value.seats?.[id];
     return validRange(seat?.occupied) && validRange(seat?.free) &&
-      (seat.occupied[1] < seat.free[0] || seat.free[1] < seat.occupied[0]);
+      (seat.occupied[1] <= seat.free[0] || seat.free[1] < seat.occupied[0]);
   }) && ["moderateFrom", "noisyFrom", "alertAfterMs"].every(key =>
     Number.isFinite(value.noise?.[key]) && value.noise[key] >= 0) &&
     value.noise.moderateFrom < value.noise.noisyFrom && value.noise.noisyFrom <= 1023;
@@ -350,10 +353,10 @@ try {
   if (saved && saved.seatConfirmMs === undefined) saved.seatConfirmMs = defaults.seatConfirmMs;
   if (validSettings(saved)) settings = saved;
 } catch { /* Defaults remain available if storage is disabled. */ }
-const labels = { free: "Free", busy: "Occupied", check: "Needs a check", stale: "No update" };
+const labels = { free: "Free", busy: "Occupied", items: "Items detected", check: "Pending / unknown", stale: "No update" };
 const clock = ms => ms == null ? "—" : new Date(ms).toLocaleTimeString();
 const inRange = (value, range) => Number.isFinite(value) && value >= range[0] && value <= range[1];
-let selected = "A", mode = "normal", packet = null, reachable = true;
+let selected = "A", mode = location.protocol === "file:" ? "normal" : "live", packet = null, reachable = true;
 let events = [], previous = {}, noisySince = null, noisyAlert = false;
 
 function log(message, time = Date.now()) {
@@ -373,7 +376,7 @@ function confirmSeat(id, candidate, fresh) {
     seatHistory[id] = history;
   }
   history.last = timestamp;
-  if (!["free", "busy"].includes(candidate)) {
+  if (!["free", "busy", "items"].includes(candidate)) {
     history.candidate = null;
     return { state: history.confirmed, note: "Invalid or ambiguous reading. Confirmation timer reset." };
   }
@@ -405,10 +408,14 @@ function view(now = Date.now()) {
     const distance = fresh ? packet.distanceCm?.[id] ?? null : null;
     const ranges = thresholds.seats[id];
     const firmwareOccupied = firmwareSeat(id);
-    const occupied = inRange(distance, ranges.occupied), free = inRange(distance, ranges.free);
-    const candidate = !fresh ? "stale" :
-      firmwareOccupied !== null ? (firmwareOccupied ? "busy" : "free") :
-      occupied === free ? "check" : occupied ? "busy" : "free";
+    const occupied = inRange(distance, ranges.occupied);
+    const free = !occupied && (inRange(distance, ranges.free) || (distance === null && thresholds.nullIsFree));
+    const radar = fresh ? packet.radar : null;
+    const objectDetected = firmwareOccupied ?? (occupied ? true : free ? false : null);
+    const candidate = !fresh ? "stale" : objectDetected === false ? "free" :
+      objectDetected === null ? "check" :
+      radar === CONFIG.radar.absentValue ? "items" :
+      radar === CONFIG.radar.presentValue ? "busy" : "check";
     const confirmation = confirmSeat(id, candidate, fresh);
     const state = confirmation.state;
     const sensor = !fresh ? "No fresh reading." :
@@ -419,14 +426,8 @@ function view(now = Date.now()) {
   });
   const raw = fresh ? packet.radar : null;
   const present = raw === CONFIG.radar.presentValue ? true : raw === CONFIG.radar.absentValue ? false : null;
-  const occupied = seats.some(s => s.state === "busy");
-  const complete = seats.every(s => s.state !== "check");
-  const mismatch = present === false && occupied || present === true && complete && !occupied;
-  const firmwareDisagree = !override && fresh && typeof packet.disagree === "boolean" ? packet.disagree : null;
-  const title = !fresh ? "No update" :
-    firmwareDisagree === true ? "Needs a check" :
-    firmwareDisagree === false ? (mismatch ? "Checking…" : present === null || !complete ? "Inconclusive" : "Agrees") :
-    mismatch ? "Needs a check" : present === null || !complete ? "Inconclusive" : "Agrees";
+  const title = !fresh ? "No update" : present === false ? "Area empty" :
+    present === true ? "Area presence" : "Unknown";
   const amplitude = fresh ? packet.noiseAmplitude : null;
   const firmwareLevel = !override && fresh && typeof packet.noiseLevel === "string" ? packet.noiseLevel.toUpperCase() : null;
   const level = firmwareLevel && ["QUIET", "MODERATE", "NOISY"].includes(firmwareLevel)
@@ -445,10 +446,8 @@ function view(now = Date.now()) {
     freeCount, busyCount, mode: zoneMode, firmwareWarning,
     noise: { level, cls: warning || level === "Noisy" ? "warn" : level === "No update" ? "bad" : "ok",
       note: warning ? "Sustained noise alert for the monitored area." : "Area reading only. No calibrated dB or audio recording." },
-    radar: { present, title, cls: title === "Needs a check" ? "warn" : title === "Agrees" ? "ok" : "mid",
-      note: title === "Needs a check" ? "Area presence and seat readings disagree. Seat readings are shown independently." :
-        title === "Checking…" ? "The firmware is confirming this mismatch before showing an alert." :
-        "Radar checks the area, not individual seats." }
+    radar: { present, title, cls: present === null ? "mid" : "ok",
+      note: "No area presence + detected object = possible items on a seat. Area presence cannot identify individual people." }
   };
 }
 
@@ -464,7 +463,7 @@ function update() {
       if (before && before !== seat.label) log("Seat " + seat.id + ": " + before + " → " + seat.label, packet.receivedAt);
       previous[seat.id] = seat.label;
     }
-    if (radar.title === "Needs a check" && previous.radar !== radar.title) log("Radar and seat readings disagree.", packet.receivedAt);
+
     if (mode && previous.mode && mode !== previous.mode) log("Zone mode: " + previous.mode + " → " + mode, packet.receivedAt);
     if (scene.firmwareWarning === true && previous.noiseWarning !== true) {
       log("Alert: sustained area noise.", packet.receivedAt);
@@ -588,10 +587,10 @@ function render() {
     : `<strong>${scene.link.text}</strong> · Last packet ${scene.link.updated}`;
 
   document.getElementById("stats").innerHTML = `
-    <div class="stat"><b>${summary}</b><span>Counts only the 4 seats on this sensed table</span></div>
+    <div class="stat"><b>${summary}</b><span>Counts only Table 05 · Pending seats excluded</span></div>
     <div class="stat"><b>${scene.link.ok ? free : "—"}</b><span>Free</span></div>
     <div class="stat"><b>${scene.link.ok ? busy : "—"}</b><span>Occupied</span></div>
-    <div class="stat"><b>${scene.link.ok ? scene.seats.filter(s => s.state === "check").length : "—"}</b><span>Needs a check</span></div>`;
+    <div class="stat"><b>${scene.link.ok ? scene.seats.filter(s => s.state === "items").length : "—"}</b><span>Items detected</span></div>`;
 
   document.getElementById("seats").innerHTML = scene.seats.map(seat => `
     <button type="button" class="seat ${seat.state} ${seat.id === selected ? "selected" : ""}" data-seat="${seat.id}">
@@ -642,6 +641,7 @@ document.getElementById("backToTables").addEventListener("click", () => {
 function labelIcon(state) {
   if (state === "free") return "○";
   if (state === "busy") return "●";
+  if (state === "items") return "▣";
   if (state === "check") return "△";
   return "✕";
 }
@@ -669,6 +669,7 @@ document.getElementById("seatSettings").innerHTML = ids.map(id =>
 
 function fillSettings() {
   input("source").value = settings.source;
+  input("nullIsFree").value = String(settings.nullIsFree);
   input("seatSeconds").value = settings.seatConfirmMs / 1000;
   for (const id of ids) for (const kind of ["occupied", "free"]) {
     settings.seats[id][kind].forEach((number, index) => { input(`${id}-${kind}-${index}`).value = number; });
@@ -716,6 +717,7 @@ settingsForm.addEventListener("submit", event => {
   event.preventDefault();
   const next = {
     source: input("source").value,
+    nullIsFree: input("nullIsFree").value === "true",
     seatConfirmMs: input("seatSeconds").valueAsNumber * 1000,
     seats: Object.fromEntries(ids.map(id => [id, {
       occupied: [0, 1].map(i => input(`${id}-occupied-${i}`).valueAsNumber),
@@ -725,7 +727,7 @@ settingsForm.addEventListener("submit", event => {
       noisyFrom: input("noisyFrom").valueAsNumber, alertAfterMs: input("seconds").valueAsNumber * 1000 }
   };
   if (!validSettings(next)) {
-    settingsStatus.textContent = "Check that each minimum is at most its maximum, seat ranges do not overlap, and Moderate is below Noisy.";
+    settingsStatus.textContent = "Check that each minimum is at most its maximum, seat ranges only share a boundary or remain separate, and Moderate is below Noisy.";
     return;
   }
   applySettings(next, "Settings applied.");
@@ -735,6 +737,14 @@ document.getElementById("resetSettings").addEventListener("click", () => {
   fillSettings();
 });
 
+// The server verifies local access. Only show the admin entry after that check succeeds.
+if (location.protocol !== "file:") {
+  fetch("/admin/status", { cache: "no-store" }).then(response => {
+    document.getElementById("adminLink").hidden = !response.ok;
+  }).catch(() => {});
+}
+document.querySelectorAll("[data-scene]").forEach(button => button.classList.toggle("active", button.dataset.scene === mode));
+document.getElementById("sourcePill").textContent = mode === "live" ? "Live telemetry" : "Simulated data · Demo";
 loop();
 </script>
 </body>
